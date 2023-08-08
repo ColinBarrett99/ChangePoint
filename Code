@@ -1,0 +1,134 @@
+library(shiny)
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(bcp)
+library(dplyr)
+library(gridExtra)
+
+byYear <- read_excel("Point Guard Data Adv.xlsx", sheet = "Dashboard per player")
+
+byYear <- byYear %>% rename_all(~ gsub(" ", "_", .))
+
+advancedPG <- byYear
+
+newAdvColNames <- c('Year', 'Full Name', 'Value Over Replacement', 'True Shooting %', 'Free Throw Rate', 'Rebounding %',
+                    'Assist %', 'Steal %','Turnover %', 'Usage Rate')
+
+colnames(advancedPG) <- newAdvColNames
+
+totalsPG <- read_excel("Point Guard Data Totals.xlsx", sheet = "Dashboard per player")
+
+
+percentagesPG <- read_excel("Point Guard Data Totals.xlsx", sheet = "Percentages per player")
+
+
+
+
+# Define UI
+ui <- fluidPage(
+  
+  # Application title
+  titlePanel("NBA Point Guard Change Point Analysis"),
+  
+  # Sidebar with a dropdown menu for data source and variable selection
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("dataSource", 
+                  "Choose a data source:", 
+                  choices = c("Advanced Player Season Data" = "advancedPG", 
+                              "Player Season Totals Data" = "totalsPG",
+                              "Player Season Percentages Data" = "percentagesPG")),
+      uiOutput("varSelect"),
+      uiOutput("nameSelect")  # New UI output for player selection
+    ),
+    
+    # Show a plot of the selected variable and the change point plot
+    mainPanel(
+      plotOutput("linePlot"),
+      tags$style(type="text/css", "#changePointPlot { margin-top: 50px; }"),
+      plotOutput("changePointPlot")
+    )
+  )
+)
+
+
+# Define server logic
+server <- function(input, output, session) {
+  
+  # Update variable choices based on the selected data source
+  output$varSelect <- renderUI({
+    selectInput("variable", 
+                "Choose a variable:", 
+                choices = colnames(get(input$dataSource))[-c(1,2)])  # Exclude the Year and Full_Name columns
+  })
+  
+  # Update player choices based on the selected data source
+  output$nameSelect <- renderUI({
+    selectInput("player", 
+                "Choose a player:", 
+                choices = unique(get(input$dataSource)$`Full Name`))
+  })
+  
+  observeEvent(input$dataSource, {
+    # Reset input$variable and input$player when the data source changes
+    updateSelectInput(session, "variable", 
+                      choices = colnames(get(input$dataSource))[-c(1,2)],  # Exclude the Year and Full_Name columns
+                      selected = colnames(get(input$dataSource))[-c(1,2)][1])  # Select the first valid choice
+    updateSelectInput(session, "player", 
+                      choices = unique(get(input$dataSource)$`Full Name`),
+                      selected = unique(get(input$dataSource)$`Full Name`)[[1]])  # Select the first player as default
+  })
+  
+  # Create a reactive expression for the filtered data
+  filteredData <- reactive({
+    # Filter the data for the selected player
+    data <- get(input$dataSource)
+    data <- data[data$`Full Name` == input$player, ]
+    return(data)
+  })
+  
+  # Generate line plot
+  output$linePlot <- renderPlot({
+    req(input$variable, input$player)  # Ensures that input$variable and input$player are not NULL before proceeding
+    
+    # Return if the selected variable doesn't exist in the data frame
+    if (!(input$variable %in% names(filteredData()))) return()
+    
+    ggplot(filteredData(), aes_(x = ~Year, y = as.name(input$variable))) + 
+      geom_line() +
+      labs(x = "Year", y = input$variable, title = paste(input$variable, "by Year")) +
+      theme(plot.title = element_text(hjust = 0.5, size = rel(2.0)),
+            axis.title.x = element_text(size = rel(2.0)),
+            axis.title.y = element_text(size = rel(2.0)),
+            axis.text.x = element_text(size = rel(2.0)),
+            axis.text.y = element_text(size = rel(2.0)))
+  })
+  
+  # Generate change point probability plot
+  output$changePointPlot <- renderPlot({
+    req(input$variable, input$player)  # Ensures that input$variable and input$player are not NULL before proceeding
+    
+    # Return if the selected variable doesn't exist in the data frame
+    if (!(input$variable %in% names(filteredData()))) return()
+    
+    bcp_result <- bcp(as.numeric(filteredData()[[input$variable]]), p0 = 0.01, burnin = 1000, mcmc = 10000)
+    
+    # Create a data frame for plotting
+    plot_data <- data.frame(Year = filteredData()$Year, Probability = bcp_result$posterior.prob)
+    
+    # Plot the change point probabilities
+    ggplot(plot_data, aes(x = Year, y = Probability)) +
+      geom_line() +
+      labs(x = "Year", y = "Change Point Probability", title = paste("Change Point Probability of", input$variable, "by Year")) +
+      theme(plot.title = element_text(hjust = 0.5, size = rel(2.0)),
+            axis.title.x = element_text(size = rel(2.0)),
+            axis.title.y = element_text(size = rel(2.0)),
+            axis.text.x = element_text(size = rel(2.0)),
+            axis.text.y = element_text(size = rel(2.0)))
+  })
+  
+}
+
+
+shinyApp(ui = ui, server = server)
